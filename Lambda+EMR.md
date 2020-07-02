@@ -21,6 +21,7 @@ def delegate_emr(event, context):
     worker_subnet = env('WORKER_SUBNET')
     
     emr = boto3.client('emr')
+    lambda_client = boto3.client('lambda')
     
     step_name = job
     step_args = [
@@ -34,7 +35,6 @@ def delegate_emr(event, context):
         jar_es_hadoop,
         '--job', job,
         '--esHost', 'https://{es}:443'.format(es=es_host),
-        '--esCreateIndex', 'false',
         '--dmzDir', 's3://{s3}/temp/default'.format(s3=s3_data),
         '--workingDir', 's3://{s3}/temp/emr/{id}/workspace'.format(s3=s3_data,id=random_id)
     ]
@@ -59,6 +59,13 @@ def delegate_emr(event, context):
         }
     }
     
+    #use the event object
+    my_tags = lambda_client.get_function(FunctionName='delegate')['Tags']
+    print(my_tags)
+    tags = []
+    for key, value in my_tags.items():
+        tags.append({'Key': key, 'Value': value})
+    
     #TODO: filter for running clusters with the right name
     list_cluster_response = emr.list_clusters(ClusterStates=['STARTING', 'BOOTSTRAPPING', 'RUNNING', 'WAITING'])
     active_clusters = list_cluster_response['Clusters']
@@ -74,15 +81,30 @@ def delegate_emr(event, context):
         LogUri='s3://{s3}/temp/emr/{id}/logs'.format(s3=s3_data, id=random_id),
         ReleaseLabel='emr-5.30.1',
         Instances={
-            'MasterInstanceType': 'm5.xlarge',
-            'SlaveInstanceType': 'm5.xlarge',
-            'InstanceCount': 4,
             'Ec2SubnetIds': [worker_subnet],
             'AdditionalSlaveSecurityGroups': [worker_sg],
-            'AdditionalMasterSecurityGroups': [worker_sg]
+            'AdditionalMasterSecurityGroups': [worker_sg],
+            'InstanceGroups': [
+                {
+                    'Name': "Controller",
+                    'Market': 'SPOT',
+                    'InstanceRole': 'MASTER',
+                    'InstanceType': 'm5.xlarge',
+                    'InstanceCount': 1,
+                },
+                {
+                    'Name': "Workers",
+                    'Market': 'SPOT',
+                    'InstanceRole': 'CORE',
+                    'InstanceType': 'm5.xlarge',
+                    'InstanceCount': 3,
+                }
+            ]
         },
         Steps=[step],
-    VisibleToAllUsers=True,
-    ServiceRole='EMR_DefaultRole',
-    JobFlowRole='EMR_EC2_DefaultRole')
+        VisibleToAllUsers=True,
+        ServiceRole='EMR_DefaultRole',
+        JobFlowRole='EMR_EC2_DefaultRole',
+        Tags=tags
+    )
 ```
